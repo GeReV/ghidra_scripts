@@ -268,7 +268,7 @@ public class LoadBorlandOverlays extends GhidraScript {
         File file = askFile("Select executable...", "OK");
         print(file.toString());
 
-        short base = 0x885; //askInt("Program base", "Please enter base segment");
+        short base = (short)askInt("Program base segment", "Please enter base segment");
 
         try (RandomAccessFile reader = new RandomAccessFile(file, "r")) {
             MzHeader header = readMzHeader(reader);
