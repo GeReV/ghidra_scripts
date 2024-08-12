@@ -1,4 +1,4 @@
-//Loads
+// Loads overlays from a Borland-compiled executable, appends them to the program, and wires them up.
 //@author Amir Grozki
 //@category Borland
 //@keybinding
