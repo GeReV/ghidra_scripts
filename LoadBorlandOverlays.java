@@ -10,13 +10,19 @@ import ghidra.app.cmd.disassemble.DisassembleCommand;
 import ghidra.app.script.GhidraScript;
 import ghidra.program.model.address.Address;
 import ghidra.program.model.address.AddressSet;
+import ghidra.program.model.listing.Function;
+import ghidra.program.model.listing.FunctionManager;
 import ghidra.program.model.mem.Memory;
 import ghidra.program.model.mem.MemoryBlock;
+import ghidra.program.model.symbol.Namespace;
+import ghidra.program.model.symbol.SourceType;
 import ghidra.util.datastruct.IntIntHashtable;
 
 import java.io.*;
 import java.nio.ByteBuffer;
 import java.nio.file.Files;
+import java.util.ArrayList;
+import java.util.List;
 
 /* offset,segment pair */;
 //class FarPtr {
@@ -300,6 +306,10 @@ public class LoadBorlandOverlays extends GhidraScript {
             for (int i = 0; i < entries.length; i++) {
                 BorlandSegmentEntry entry = entries[i];
 
+                if ((entry.flags & BorlandSegmentEntry.FBOV_OVR) == 0) {
+                    continue;
+                }
+
                 int offset = startOffset + entry.seg * 16;
 
                 overlays[i] = readBorlandOverlayHeaderRecordAt(reader, offset, fbovHeaderOffset);
@@ -327,7 +337,9 @@ public class LoadBorlandOverlays extends GhidraScript {
                 println("Rebasing FBOV fixups...");
 
                 printf("Fixups: %d\n", overlay.fixups.length);
-                for (short fixup : overlay.fixups) {
+                for (int j = 0; j < overlay.fixups.length; j++) {
+                    short fixup = overlay.fixups[j];
+
                     int sf = LE(program.getShort(fixup));
                     int flags = sf & 7; //fixup flags
                     short rseg = (short) (entries[sf >> 3].seg + base);
@@ -346,7 +358,7 @@ public class LoadBorlandOverlays extends GhidraScript {
 
                 try (ByteArrayInputStream input = new ByteArrayInputStream(program.array())) {
                     MemoryBlock block = memory.createInitializedBlock(
-                            "ovr_%04x_%04x".formatted(srcSeg, destSeg),
+                            String.format("ovr_%04x_%04x", srcSeg, destSeg),
                             toAddr(destSeg << 4),
                             input,
                             overlay.codesz,
@@ -363,7 +375,9 @@ public class LoadBorlandOverlays extends GhidraScript {
 
                 println("Untrapping the FBOV stub headers...");
 
-                DisassembleCommand[] cmds = new DisassembleCommand[overlay.traps.length];
+                FunctionManager functionManager = currentProgram.getFunctionManager();
+                Namespace globalNS = currentProgram.getGlobalNamespace();
+                List<DisassembleCommand> cmds = new ArrayList<>(overlay.traps.length * 2);
 
                 printf("Traps: %d\n", overlay.traps.length);
                 //untrap trampoulines
@@ -383,11 +397,29 @@ public class LoadBorlandOverlays extends GhidraScript {
 
                     Address start = toAddr((srcSeg << 4) + j * 5);
 
-                    AddressSet addressSet = new AddressSet(start, start.add(5));
+                    AddressSet addressSet = new AddressSet(start, start.add(4));
                     clearListing(addressSet);
                     setBytes(addressSet.getMinAddress(), b);
 
-                    cmds[j] = new DisassembleCommand(addressSet, addressSet, true);
+                    // Create function at the new segment.
+                    Address fnAddress = toAddr((overlaySeg << 4) + trap.ofs);
+                    Function fn = createFunction(fnAddress, String.format("FUN_%04x_%04x", overlaySeg, trap.ofs));
+
+                    // Remove existing thunk function.
+                    removeFunctionAt(addressSet.getMinAddress());
+
+                    // Create new thunk function.
+                    functionManager.createThunkFunction(
+                            String.format("thunk_%s", fn.getName()),
+                            globalNS,
+                            addressSet.getMinAddress(),
+                            addressSet,
+                            fn,
+                            SourceType.USER_DEFINED
+                    );
+
+                    cmds.add(new DisassembleCommand(addressSet, addressSet, true));
+                    cmds.add(new DisassembleCommand(fnAddress, null, true));
                 }
 
                 for (DisassembleCommand cmd : cmds) {
@@ -419,12 +451,6 @@ public class LoadBorlandOverlays extends GhidraScript {
 
         overlay.traps = new BorlandTrap[overlay.jmpcnt];
 
-        overlay.fixups = new short[overlay.fixupsz / 2];
-        //FBOV fixups are stored after the segment's code
-        for (int j = 0; j < overlay.fixupsz / 2; j++) {
-            overlay.fixups[j] = LE(reader.readShort());
-        }
-
         int cofs32 = fbovHeaderOffset + 16 + overlay.fileofs;
 
         byte[] codeBuf = new byte[overlay.codesz];
@@ -433,10 +459,16 @@ public class LoadBorlandOverlays extends GhidraScript {
 
         overlay.program = ByteBuffer.wrap(codeBuf);
 
-        for (int j = 0; j < overlay.traps.length; j++) {
-            BorlandTrap trap = overlay.traps[j] = new BorlandTrap();
+        overlay.fixups = new short[overlay.fixupsz / 2];
+        //FBOV fixups are stored after the segment's code
+        for (int i = 0; i < overlay.fixupsz / 2; i++) {
+            overlay.fixups[i] = LE(reader.readShort());
+        }
 
-            long trapOfs = offset + BorlandOverlayHeaderRecord.SIZE + (long) j * BorlandTrap.SIZE;
+        for (int i = 0; i < overlay.traps.length; i++) {
+            BorlandTrap trap = overlay.traps[i] = new BorlandTrap();
+
+            long trapOfs = offset + BorlandOverlayHeaderRecord.SIZE + (long) i * BorlandTrap.SIZE;
             reader.seek(trapOfs);
 
             trap.code[0] = reader.readByte();
@@ -465,8 +497,8 @@ public class LoadBorlandOverlays extends GhidraScript {
         return entries;
     }
 
-    private static BorlandFileHeader readBorlandFileHeaderAt(RandomAccessFile reader, int fbovofs) throws IOException {
-        reader.seek(fbovofs);
+    private static BorlandFileHeader readBorlandFileHeaderAt(RandomAccessFile reader, int offset) throws IOException {
+        reader.seek(offset);
 
         BorlandFileHeader fbov = new BorlandFileHeader();
 
