@@ -341,7 +341,7 @@ public class LoadBorlandOverlays extends GhidraScript {
 
                     int sf = LE(program.getShort(fixup));
                     int flags = sf & 7; //fixup flags
-                    short rseg = (short) (entries[sf >> 3].seg + base);
+                    short rseg = (short) (entries[sf >>> 3].seg + base);
 
                     program.putShort(fixup, LE(rseg));
 
@@ -397,9 +397,9 @@ public class LoadBorlandOverlays extends GhidraScript {
                     byte[] b = new byte[]{
                             X86_JMP,
                             (byte) trap.ofs,
-                            (byte) (trap.ofs >> 8),
+                            (byte) (trap.ofs >>> 8),
                             (byte) overlaySeg,
-                            (byte) (overlaySeg >> 8),
+                            (byte) (overlaySeg >>> 8),
                     };
 
                     Address start = toAddr((srcSeg << 4) + j * 5);
