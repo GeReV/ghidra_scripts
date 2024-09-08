@@ -20,7 +20,6 @@ import ghidra.util.datastruct.IntIntHashtable;
 
 import java.io.*;
 import java.nio.ByteBuffer;
-import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -356,6 +355,14 @@ public class LoadBorlandOverlays extends GhidraScript {
 
                 IntIntHashtable segmentMap = new IntIntHashtable();
 
+                int codeSizeParagraphs = (overlay.codesz + 15) / 16;
+
+                if (crossesSegment(destSeg, codeSizeParagraphs)) {
+                    // If this overlay would cross a segment 0x1000 boundary, round up to that segment and add the overlay there.
+                    // This ensures the overlay's code always fits inside a single segment.
+                    destSeg = (destSeg + 0x1000) & 0xf000;
+                }
+
                 try (ByteArrayInputStream input = new ByteArrayInputStream(program.array())) {
                     MemoryBlock block = memory.createInitializedBlock(
                             String.format("ovr_%04x_%04x", srcSeg, destSeg),
@@ -371,7 +378,7 @@ public class LoadBorlandOverlays extends GhidraScript {
                     segmentMap.put(srcSeg, destSeg);
                 }
 
-                destSeg += (overlay.codesz + 15) / 16;
+                destSeg += codeSizeParagraphs;
 
                 println("Untrapping the FBOV stub headers...");
 
@@ -427,6 +434,14 @@ public class LoadBorlandOverlays extends GhidraScript {
                 }
             }
         }
+    }
+
+    /// Returns true if adding an overlay of size `codeSizeParagraphs` paragraphs at the specified segment would
+    /// cause it to cross into the next 0x1000 (that is, the code segment exceeded 0x10000 bytes in size).
+    ///
+    /// For example, adding 3 paragraphs (0x30 bytes) to code at 0x6ffd would cause it to roll to 0x7000.
+    private static boolean crossesSegment(int destSeg, int codeSizeParagraphs) {
+        return ((destSeg + codeSizeParagraphs) & 0xf000) > (destSeg & 0xf000);
     }
 
     private static BorlandOverlayHeaderRecord readBorlandOverlayHeaderRecordAt(RandomAccessFile reader, int offset, int fbovHeaderOffset) throws IOException {
